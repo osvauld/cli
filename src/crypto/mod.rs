@@ -133,7 +133,6 @@ pub fn decrypt_message(
     // Get the plaintext Vec<u8> from the Cursor
     let plaintext = plaintext.into_inner();
     let plaintext = String::from_utf8(plaintext)?;
-    println!("Decrypted message: {}", plaintext);
 
     Ok(plaintext)
 }
@@ -177,23 +176,23 @@ impl<'a> VerificationHelper for Helper<'_> {
         for layer in structure.iter() {
             match layer {
                 openpgp::parse::stream::MessageLayer::Compression { algo } => {
-                    eprintln!("Compressed using {}", algo)
+                    // eprintln!("Compressed using {}", algo)
                 }
                 openpgp::parse::stream::MessageLayer::Encryption {
                     sym_algo,
                     aead_algo,
                 } => {
                     if let Some(aead_algo) = aead_algo {
-                        eprintln!("Encrypted and protected using {}/{}", sym_algo, aead_algo);
+                        // eprintln!("Encrypted and protected using {}/{}", sym_algo, aead_algo);
                     } else {
-                        eprintln!("Encrypted using {}", sym_algo);
+                        // eprintln!("Encrypted using {}", sym_algo);
                     }
                 }
                 openpgp::parse::stream::MessageLayer::SignatureGroup { ref results } => {
                     for result in results {
                         match result {
                             Ok(openpgp::parse::stream::GoodChecksum { ka, .. }) => {
-                                eprintln!("Good signature from {}", ka.cert());
+                                // eprintln!("Good signature from {}", ka.cert());
                             }
                             Err(e) => eprintln!("Error: {:?}", e),
                         }

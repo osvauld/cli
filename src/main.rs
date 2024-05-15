@@ -4,12 +4,12 @@ mod utils;
 
 use std::env;
 
-use api::{fetch_challenge, get_environment_by_name, verify_challenge};
-use clap::{Parser, Subcommand};
-use crypto::sign_challenge_with_key;
-use utils::{init_command, load_config_files};
-
 use crate::crypto::{decrypt_message, get_key_pair};
+use api::{fetch_challenge, get_environment_by_name, verify_challenge};
+use clap::{App, Arg, SubCommand};
+use crypto::sign_challenge_with_key;
+use std::process::Command;
+use utils::{init_command, load_config_files};
 
 #[derive(Parser)]
 #[command(name = "My CLI Tool")]
@@ -73,11 +73,17 @@ fn auth_command(envname: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("{:#?}", env_data);
     // Loop through each entry and decrypt the fieldValue
     let cert = get_key_pair(&config.enc_private_key)?;
-    println!("Certificate: {:#?}", cert); // Print the certificate
 
     for entry in env_data {
         let decrypted_value = decrypt_message(&cert, &entry.fieldValue)?;
-        // println!("Decrypted Value: {}", decrypted_value);
+        println!("Decrypted Value: {}", entry.fieldName);
+        env::set_var(&entry.fieldName, decrypted_value);
+    }
+    let status = Command::new(command).args(command_args).status()?;
+
+    if !status.success() {
+        eprintln!("Command executed with failing error code");
+        std::process::exit(status.code().unwrap_or(1));
     }
 
     Ok(())
