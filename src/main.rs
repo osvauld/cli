@@ -1,57 +1,22 @@
 mod api;
 mod crypto;
 mod utils;
-
-use std::env;
-
-use crate::crypto::{decrypt_message, get_key_pair};
 use api::{fetch_challenge, get_environment_by_name, verify_challenge};
-use clap::{App, Arg, SubCommand};
+use clap::{Parser, Subcommand};
+
 use crypto::sign_challenge_with_key;
-use std::process::Command;
+use std::env;
+use std::error::Error;
+use std::process::Command as ProcessCommand;
 use utils::{init_command, load_config_files};
 
-#[derive(Parser)]
-#[command(name = "My CLI Tool")]
-#[command(version = "1.0")]
-#[command(about = "A CLI tool for managing configurations and authentication", long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
+use crate::crypto::{decrypt_message, get_key_pair};
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Initialize the configuration by decoding a base64 string
-    Init {
-        /// Base64 encoded configuration string
-        #[arg(short, long)]
-        config: String,
-    },
-    /// Authenticate using the environment name
-    Auth {
-        /// Environment name
-        #[arg(short, long)]
-        envname: String,
-    },
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
-    match &cli.command {
-        Commands::Init { config } => {
-            init_command(config)?;
-        }
-        Commands::Auth { envname } => {
-            auth_command(envname)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn auth_command(envname: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn auth_command(
+    envname: &str,
+    command: &str,
+    command_args: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
     // Load the configuration files
     let config = load_config_files()?;
 
@@ -70,16 +35,13 @@ fn auth_command(envname: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let env_data = get_environment_by_name(&config.base_url, envname, &token)?;
 
-    println!("{:#?}", env_data);
-    // Loop through each entry and decrypt the fieldValue
     let cert = get_key_pair(&config.enc_private_key)?;
 
     for entry in env_data {
         let decrypted_value = decrypt_message(&cert, &entry.fieldValue)?;
-        println!("Decrypted Value: {}", entry.fieldName);
         env::set_var(&entry.fieldName, decrypted_value);
     }
-    let status = Command::new(command).args(command_args).status()?;
+    let status = ProcessCommand::new(command).args(command_args).status()?;
 
     if !status.success() {
         eprintln!("Command executed with failing error code");
@@ -87,4 +49,53 @@ fn auth_command(envname: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "osvauld")]
+#[command(about = "CLI tool for Osvauld", version = "1.0")]
+struct Opt {
+    #[command(subcommand)]
+    cmd: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    Init {
+        #[arg(help = "Base64 encoded string")]
+        base64string: String,
+    },
+    Env {
+        #[arg(help = "Environment name")]
+        envname: String,
+        #[arg(help = "Command to run")]
+        command: String,
+        #[arg(help = "Arguments for the command")]
+        command_args: Vec<String>,
+    },
+}
+
+fn main() {
+    let opt = Opt::parse();
+
+    match opt.cmd {
+        Command::Init { base64string } => {
+            println!("Init with base64 string: {}", base64string);
+            let _ = init_command(&base64string);
+        }
+        Command::Env {
+            envname,
+            command,
+            command_args,
+        } => {
+            println!(
+                "Env with name: {}, command: {}, args: {:?}",
+                envname, command, command_args
+            );
+            // Convert Vec<String> to Vec<&str>
+            let command_args_refs: Vec<&str> = command_args.iter().map(|s| &**s).collect();
+            // Call auth_command with the correct type
+            let _ = auth_command(&envname, &command, &command_args_refs);
+        }
+    }
 }

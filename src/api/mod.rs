@@ -52,11 +52,6 @@ pub fn fetch_challenge(base_url: &str, public_key: &str) -> Result<String, Box<d
         publicKey: public_key.to_string(),
     };
 
-    println!(
-        "Debug: Sending challenge request with body: {:?}",
-        &request_body
-    );
-
     let challenge_response: ChallengeResponse = client
         .post(format!("{}/user/challenge", base_url))
         .json(&request_body)
@@ -76,11 +71,6 @@ pub fn verify_challenge(
         signature: signed_challenge.to_string(),
         publicKey: public_key.to_string(),
     };
-
-    println!(
-        "Debug: Sending verify request with body: {:?}",
-        &request_body
-    );
 
     let auth_response: AuthResponse = client
         .post(format!("{}/user/verify", base_url))

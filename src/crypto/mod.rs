@@ -1,28 +1,21 @@
 use base64::decode;
-use openpgp::crypto::mpi::Ciphertext;
-use std::io::Cursor;
-use std::string;
-
 use openpgp::cert::prelude::*;
-use openpgp::crypto::{KeyPair, SessionKey};
+use openpgp::crypto::KeyPair;
 use openpgp::packet::key::SecretParts;
 use openpgp::packet::key::UnspecifiedRole;
 use openpgp::packet::Key;
 use openpgp::parse::{
-    stream::{DecryptionHelper, DecryptorBuilder, VerificationHelper},
+    stream::{DecryptorBuilder, VerificationHelper},
     Parse,
 };
 use openpgp::policy::StandardPolicy as P;
 use openpgp::policy::{Policy, StandardPolicy};
 use openpgp::serialize::stream::*;
-use openpgp::types::SymmetricAlgorithm;
-use openpgp::Fingerprint;
-use openpgp::KeyID;
 use sequoia_openpgp as openpgp;
-use std::collections::HashMap;
 use std::error::Error;
-use std::io::{self, Write};
-// Ensure Write is imported
+use std::io::Cursor;
+use std::io::Write;
+
 pub fn sign_challenge_with_key(
     challenge: &str,
     enc_private_key_base64: &str,
