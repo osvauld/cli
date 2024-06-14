@@ -1,223 +1,101 @@
-use base64::encode;
+mod api;
+mod crypto;
+mod utils;
+use api::{fetch_challenge, get_environment_by_name, verify_challenge};
 use clap::{Parser, Subcommand};
-use dirs::home_dir;
-use openpgp::cert::prelude::*;
-use openpgp::crypto::KeyPair;
-use openpgp::parse::Parse;
-use openpgp::serialize::stream::*;
-use reqwest::blocking::Client;
-use sequoia_openpgp as openpgp;
-use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "My CLI Tool")]
-#[command(version = "1.0")]
-#[command(about = "A CLI tool for managing configurations and authentication", long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
+use crypto::sign_challenge_with_key;
+use std::env;
+use std::error::Error;
+use std::process::Command as ProcessCommand;
+use utils::{init_command, load_config_files};
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Initialize the configuration by decoding a base64 string
-    Init {
-        /// Base64 encoded configuration string
-        #[arg(short, long)]
-        config: String,
-    },
-    /// Authenticate using the environment name
-    Auth {
-        /// Environment name
-        #[arg(short, long)]
-        envname: String,
-    },
-}
+use crate::crypto::{decrypt_message, get_key_pair};
 
-#[derive(Deserialize)]
-struct Config {
-    enc_public_key: String,
-    enc_private_key: String,
-    sign_public_key: String,
-    sign_private_key: String,
-    baseUrl: String,
-}
+fn auth_command(
+    envname: &str,
+    command: &str,
+    command_args: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load the configuration files
+    let config = load_config_files()?;
 
-#[derive(Deserialize)]
-struct ChallengeResponse {
-    data: ChallengeData,
-}
+    // Create the challenge
+    let challenge = fetch_challenge(&config.base_url, &config.sign_public_key)?;
 
-#[derive(Deserialize)]
-struct ChallengeData {
-    challenge: String,
-}
+    // Sign the challenge
+    let signed_challenge_base64 = sign_challenge_with_key(&challenge, &config.sign_private_key)?;
 
-#[derive(Serialize)]
-struct ChallengeRequest {
-    publicKey: String,
-}
+    // Send the signed challenge to verify
+    let token = verify_challenge(
+        &config.base_url,
+        &signed_challenge_base64,
+        &config.sign_public_key,
+    )?;
 
-#[derive(Serialize)]
-struct AuthRequest {
-    signature: String,
-    publicKey: String,
-}
+    let env_data = get_environment_by_name(&config.base_url, envname, &token)?;
 
-#[derive(Deserialize)]
-struct AuthResponse {
-    data: AuthData,
-}
+    let cert = get_key_pair(&config.enc_private_key)?;
 
-#[derive(Deserialize)]
-struct AuthData {
-    token: String,
-}
+    for entry in env_data {
+        let decrypted_value = decrypt_message(&cert, &entry.fieldValue)?;
+        env::set_var(&entry.fieldName, decrypted_value);
+    }
+    let status = ProcessCommand::new(command).args(command_args).status()?;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
-    match &cli.command {
-        Commands::Init { config } => {
-            init_command(config)?;
-        }
-        Commands::Auth { envname } => {
-            auth_command(envname)?;
-        }
+    if !status.success() {
+        eprintln!("Command executed with failing error code");
+        std::process::exit(status.code().unwrap_or(1));
     }
 
     Ok(())
 }
 
-fn init_command(config: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Decode the base64 encoded config string
-    let decoded = base64::decode(config)?;
-    let config_str = String::from_utf8(decoded)?;
-
-    // Deserialize the config string to the Config struct
-    let config: Config = serde_json::from_str(&config_str)?;
-
-    // Decode the base64 encoded values
-    let enc_public_key = base64::decode(&config.enc_public_key)?;
-    let enc_private_key = base64::decode(&config.enc_private_key)?;
-    let sign_public_key = base64::decode(&config.sign_public_key)?;
-    let sign_private_key = base64::decode(&config.sign_private_key)?;
-
-    // Get the .osvauld directory in the home directory
-    let home_dir = home_dir().ok_or("Could not find home directory")?;
-    let osvauld_dir = home_dir.join(".osvauld");
-    fs::create_dir_all(&osvauld_dir)?;
-
-    // Save the keys and baseUrl to files
-    save_to_file(&osvauld_dir, "enc_public_key.asc", &enc_public_key)?;
-    save_to_file(&osvauld_dir, "enc_private_key.asc", &enc_private_key)?;
-    save_to_file(&osvauld_dir, "sign_public_key.asc", &sign_public_key)?;
-    save_to_file(&osvauld_dir, "sign_private_key.asc", &sign_private_key)?;
-    save_to_file(&osvauld_dir, "baseUrl.txt", config.baseUrl.as_bytes())?;
-
-    println!("Configuration saved to ~/.osvauld");
-
-    Ok(())
+#[derive(Parser, Debug)]
+#[command(name = "osvauld")]
+#[command(about = "CLI tool for Osvauld", version = "1.0")]
+struct Opt {
+    #[command(subcommand)]
+    cmd: Command,
 }
 
-fn auth_command(envname: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Load the configuration files
-    let home_dir = home_dir().ok_or("Could not find home directory")?;
-    let osvauld_dir = home_dir.join(".osvauld");
-
-    let base_url = fs::read_to_string(osvauld_dir.join("baseUrl.txt"))?;
-    let sign_public_key = fs::read(osvauld_dir.join("sign_public_key.asc"))?;
-    let sign_private_key = fs::read(osvauld_dir.join("sign_private_key.asc"))?;
-
-    let sign_public_key_base64 = encode(&sign_public_key);
-
-    // Create the challenge
-    let client = Client::new();
-    let challenge_response: ChallengeResponse = client
-        .post(format!("{}/user/challenge", base_url))
-        .json(&ChallengeRequest {
-            publicKey: sign_public_key_base64.clone(),
-        })
-        .send()?
-        .json()?;
-
-    let challenge = challenge_response.data.challenge;
-
-    // Sign the challenge
-    let cert = openpgp::Cert::from_reader(&*sign_private_key)?;
-    let key_pair = cert
-        .keys()
-        .unencrypted_secret()
-        .with_policy(&openpgp::policy::StandardPolicy::new(), None)
-        .supported()
-        .alive()
-        .revoked(false)
-        .for_signing()
-        .next()
-        .ok_or("No signing key found")?
-        .key()
-        .clone()
-        .into_keypair()?;
-
-    let signed_challenge_base64 = sign_message_with_keypair(&challenge, key_pair)?;
-
-    // Send the signed challenge to verify
-    let auth_response: AuthResponse = client
-        .post(format!("{}/user/verify", base_url))
-        .json(&AuthRequest {
-            signature: signed_challenge_base64,
-            publicKey: sign_public_key_base64,
-        })
-        .send()?
-        .json()?;
-
-    println!("JWT Token: {}", auth_response.data.token);
-
-    Ok(())
+#[derive(Subcommand, Debug)]
+enum Command {
+    Init {
+        #[arg(help = "Base64 encoded string")]
+        base64string: String,
+    },
+    Env {
+        #[arg(help = "Environment name")]
+        envname: String,
+        #[arg(help = "Command to run")]
+        command: String,
+        #[arg(help = "Arguments for the command")]
+        command_args: Vec<String>,
+    },
 }
 
-fn save_to_file(
-    dir: &PathBuf,
-    filename: &str,
-    content: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = dir.join(filename);
-    let mut file = File::create(file_path)?;
-    file.write_all(content)?;
-    Ok(())
-}
+fn main() {
+    let opt = Opt::parse();
 
-pub fn sign_message_with_keypair(message: &str, keypair: KeyPair) -> Result<String, String> {
-    let mut signed_message = Vec::new();
-    let message_writer = Message::new(&mut signed_message);
-
-    let mut signer = Signer::new(message_writer, keypair)
-        .detached()
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    signer
-        .write_all(message.as_bytes())
-        .map_err(|_| "Failed to write message to signer.")?;
-    signer
-        .finalize()
-        .map_err(|_| "Failed to finalize signer.")?;
-
-    let mut armored_signature = Vec::new();
-    let mut armor_writer =
-        openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)
-            .map_err(|e| e.to_string())?;
-
-    armor_writer
-        .write_all(&signed_message)
-        .map_err(|_| "Failed to write signature.")?;
-    armor_writer
-        .finalize()
-        .map_err(|_| "Failed to finalize armored writer.")?;
-
-    let base64_encoded_signature = base64::encode(armored_signature);
-    Ok(base64_encoded_signature)
+    match opt.cmd {
+        Command::Init { base64string } => {
+            println!("Init with base64 string: {}", base64string);
+            let _ = init_command(&base64string);
+        }
+        Command::Env {
+            envname,
+            command,
+            command_args,
+        } => {
+            println!(
+                "Env with name: {}, command: {}, args: {:?}",
+                envname, command, command_args
+            );
+            // Convert Vec<String> to Vec<&str>
+            let command_args_refs: Vec<&str> = command_args.iter().map(|s| &**s).collect();
+            // Call auth_command with the correct type
+            let _ = auth_command(&envname, &command, &command_args_refs);
+        }
+    }
 }
