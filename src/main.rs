@@ -4,13 +4,16 @@ mod utils;
 use api::{fetch_challenge, get_environment_by_name, verify_challenge};
 use clap::{Parser, Subcommand};
 
+use crate::crypto::{decrypt_message, get_key_pair};
 use crypto::sign_challenge_with_key;
+use dirs::home_dir;
+use log::{error, info};
+use simplelog::*;
 use std::env;
 use std::error::Error;
+use std::fs::File;
 use std::process::Command as ProcessCommand;
 use utils::{init_command, load_config_files};
-
-use crate::crypto::{decrypt_message, get_key_pair};
 
 fn auth_command(
     envname: &str,
@@ -77,11 +80,25 @@ enum Command {
 
 fn main() {
     let opt = Opt::parse();
+    let mut log_path = home_dir().expect("Could not get home directory");
+    log_path.push(".osvauld");
+    std::fs::create_dir_all(&log_path).expect("Failed to create .osvauld directory");
+    log_path.push("log.txt");
+    let log_file = File::create(log_path).expect("Failed to create log file");
 
+    CombinedLogger::init(vec![WriteLogger::new(
+        LevelFilter::Info,
+        Config::default(),
+        log_file,
+    )])
+    .unwrap();
     match opt.cmd {
         Command::Init { base64string } => {
             println!("Init with base64 string: {}", base64string);
-            let _ = init_command(&base64string);
+            match init_command(&base64string) {
+                Ok(_) => info!("Init command successful"),
+                Err(e) => error!("Error running init command: {}", e),
+            }
         }
         Command::Env {
             envname,
@@ -95,7 +112,10 @@ fn main() {
             // Convert Vec<String> to Vec<&str>
             let command_args_refs: Vec<&str> = command_args.iter().map(|s| &**s).collect();
             // Call auth_command with the correct type
-            let _ = auth_command(&envname, &command, &command_args_refs);
+            match auth_command(&envname, &command, &command_args_refs) {
+                Ok(_) => info!("Auth command successful"),
+                Err(e) => error!("Error running auth command: {}", e),
+            }
         }
     }
 }
